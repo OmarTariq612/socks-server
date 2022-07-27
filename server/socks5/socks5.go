@@ -259,7 +259,7 @@ func (r *reply) getAsBuf() ([]byte, error) {
 		return nil, fmt.Errorf("invalid address type code -> (%d) <- (in reply header)", r.addressType)
 	}
 	var bindPortBinary [2]byte
-	binary.BigEndian.PutUint16(bindAddrBinary[:], r.bindPort)
+	binary.BigEndian.PutUint16(bindPortBinary[:], r.bindPort)
 	buf = append(buf, bindAddrBinary...)
 	buf = append(buf, bindPortBinary[:]...)
 	return buf, nil
