@@ -1,6 +1,8 @@
 package socks4a
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -33,6 +35,8 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
+var dialer = &net.Dialer{}
+
 func HandleConnection(conn net.Conn) error {
 	req, err := parseRequst(conn)
 	if err != nil {
@@ -45,7 +49,9 @@ func HandleConnection(conn net.Conn) error {
 		return err
 	}
 
-	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))), timeoutDuration)
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
 	if err != nil {
 		rep := &reply{resCode: requestRejectedOrFailed}
 		buf, _ := rep.getAsBuf()
@@ -53,6 +59,7 @@ func HandleConnection(conn net.Conn) error {
 		return err
 	}
 	defer serverConn.Close()
+
 	bindAddr, bindPortStr, err := net.SplitHostPort(serverConn.LocalAddr().String())
 	if err != nil {
 		rep := &reply{resCode: requestRejectedOrFailed}
@@ -60,7 +67,6 @@ func HandleConnection(conn net.Conn) error {
 		_, err = conn.Write(buf)
 		return err
 	}
-
 	bindPort, _ := strconv.Atoi(bindPortStr)
 
 	rep := &reply{resCode: requestGranted, bindAddr: bindAddr, bindPort: uint16(bindPort)}
@@ -71,6 +77,7 @@ func HandleConnection(conn net.Conn) error {
 		_, err = conn.Write(buf)
 		return err
 	}
+
 	_, err = conn.Write(buf)
 	if err != nil {
 		return err
@@ -113,20 +120,40 @@ func parseRequst(conn net.Conn) (*requst, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read request header")
 	}
-	var oneBytebuf [1]byte
+	var oneByteBuf [1]byte
 	for {
-		_, err = io.ReadFull(conn, oneBytebuf[:])
+		_, err = io.ReadFull(conn, oneByteBuf[:])
 		if err != nil {
 			return nil, fmt.Errorf("could not read (a byte) from the userid")
 		}
-		if oneBytebuf[0] == 0 {
+		if oneByteBuf[0] == 0 {
 			break
 		}
 	}
 	cmd := command(buf[0])
 	destPort := binary.BigEndian.Uint16(buf[1:3])
-	destHost := net.IP(buf[3:7]).String()
+	var destHost string
+	if isDomainUnresolved(buf[3:7]) {
+		var domainName []byte
+		for {
+			_, err = io.ReadFull(conn, oneByteBuf[:])
+			if err != nil {
+				return nil, fmt.Errorf("could not read (a byte) from the domain name")
+			}
+			if oneByteBuf[0] == 0 {
+				break
+			}
+			domainName = append(domainName, oneByteBuf[0])
+		}
+		destHost = string(domainName)
+	} else {
+		destHost = net.IP(buf[3:7]).String()
+	}
 	return &requst{cmd: cmd, destHost: destHost, destPort: destPort}, nil
+}
+
+func isDomainUnresolved(ip []byte) bool {
+	return bytes.Equal(ip[:3], []byte{0, 0, 0}) && ip[3] != 0 // IP address 0.0.0.x
 }
 
 // +----+----+----+----+----+----+----+----+

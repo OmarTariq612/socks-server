@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -54,6 +55,8 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
+var dialer = &net.Dialer{}
+
 func HandleConnection(conn net.Conn) error {
 	err := handleHandshake(conn)
 	if err != nil {
@@ -71,7 +74,10 @@ func HandleConnection(conn net.Conn) error {
 		_, err = conn.Write(buf)
 		return err
 	}
-	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))), timeoutDuration)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
 	if err != nil {
 		rep := &reply{resCode: generalSocksFailure}
 		buf, _ := rep.getAsBuf()
