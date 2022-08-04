@@ -134,7 +134,7 @@ func parseRequst(conn net.Conn) (*requst, error) {
 	destPort := binary.BigEndian.Uint16(buf[1:3])
 	var destHost string
 	if isDomainUnresolved(buf[3:7]) {
-		var domainName []byte
+		domainName := make([]byte, 0, 20) // this is an estimate of the domain name length
 		for {
 			_, err = io.ReadFull(conn, oneByteBuf[:])
 			if err != nil {
@@ -159,7 +159,7 @@ func isDomainUnresolved(ip []byte) bool {
 // +----+----+----+----+----+----+----+----+
 // | VN | CD | DSTPORT |      DSTIP        |
 // +----+----+----+----+----+----+----+----+
-//	  1    1      2              4
+//    1    1      2              4
 type reply struct {
 	resCode  resultCode
 	bindAddr string
