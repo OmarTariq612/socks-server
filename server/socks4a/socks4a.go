@@ -38,15 +38,15 @@ const timeoutDuration time.Duration = 5 * time.Second
 var dialer = &net.Dialer{}
 
 func HandleConnection(conn net.Conn) error {
-	req, err := parseRequst(conn)
+	req, err := parseRequest(conn)
 	if err != nil {
 		return err
 	}
 	if req.cmd != connect {
 		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
-		return err
+		buf, _ := rep.marshal()
+		conn.Write(buf)
+		return fmt.Errorf("unsupported command -> (%v) <-", req.cmd)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
@@ -54,33 +54,20 @@ func HandleConnection(conn net.Conn) error {
 	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
 	if err != nil {
 		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
+		buf, _ := rep.marshal()
+		conn.Write(buf)
 		return err
 	}
 	defer serverConn.Close()
 
-	bindAddr, bindPortStr, err := net.SplitHostPort(serverConn.LocalAddr().String())
-	if err != nil {
-		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
-		return err
-	}
+	bindAddr, bindPortStr, _ := net.SplitHostPort(serverConn.LocalAddr().String())
 	bindPort, _ := strconv.Atoi(bindPortStr)
 
 	rep := &reply{resCode: requestGranted, bindAddr: bindAddr, bindPort: uint16(bindPort)}
-	buf, err := rep.getAsBuf()
-	if err != nil {
-		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
-		return err
-	}
-
+	buf, _ := rep.marshal()
 	_, err = conn.Write(buf)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not write reply to the client")
 	}
 
 	errc := make(chan error, 2)
@@ -108,13 +95,13 @@ func HandleConnection(conn net.Conn) error {
 // | VN | CD | DSTPORT |      DSTIP        | USERID       |NULL|
 // +----+----+----+----+----+----+----+----+----+----+....+----+
 //    1    1      2              4           variable       1
-type requst struct {
+type request struct {
 	cmd      command
 	destHost string
 	destPort uint16
 }
 
-func parseRequst(conn net.Conn) (*requst, error) {
+func parseRequest(conn net.Conn) (*request, error) {
 	var buf [7]byte
 	_, err := io.ReadFull(conn, buf[:])
 	if err != nil {
@@ -149,7 +136,7 @@ func parseRequst(conn net.Conn) (*requst, error) {
 	} else {
 		destHost = net.IP(buf[3:7]).String()
 	}
-	return &requst{cmd: cmd, destHost: destHost, destPort: destPort}, nil
+	return &request{cmd: cmd, destHost: destHost, destPort: destPort}, nil
 }
 
 func isDomainUnresolved(ip []byte) bool {
@@ -166,7 +153,7 @@ type reply struct {
 	bindPort uint16
 }
 
-func (r *reply) getAsBuf() ([]byte, error) {
+func (r *reply) marshal() ([]byte, error) {
 	buf := make([]byte, 2, 8)
 	buf[0] = 0
 	buf[1] = byte(r.resCode)

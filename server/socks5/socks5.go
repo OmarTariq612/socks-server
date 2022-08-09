@@ -63,16 +63,20 @@ func HandleConnection(conn net.Conn) error {
 		conn.Write([]byte{socksServerVersion, noAcceptableMethod})
 		return err
 	}
-	conn.Write([]byte{socksServerVersion, noAuthMethodRequired})
+	_, err = conn.Write([]byte{socksServerVersion, noAuthMethodRequired})
+	if err != nil {
+		return fmt.Errorf("could not write the chosen auth method to the client")
+	}
+
 	req, err := parseRequest(conn)
 	if err != nil {
 		return err
 	}
 	if req.cmd != connect {
 		rep := &reply{resCode: commandNotSupported}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
-		return err
+		buf, _ := rep.marshal()
+		conn.Write(buf)
+		return fmt.Errorf("unsupported command -> (%v) <-", req.cmd)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
@@ -80,23 +84,13 @@ func HandleConnection(conn net.Conn) error {
 	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
 	if err != nil {
 		rep := &reply{resCode: generalSocksFailure}
-		buf, _ := rep.getAsBuf()
-		if err != nil {
-			return err
-		}
-		_, err = conn.Write(buf)
+		buf, _ := rep.marshal()
+		conn.Write(buf)
 		return err
 	}
 	defer serverConn.Close()
 
-	bindAddr, bindPortStr, err := net.SplitHostPort(serverConn.LocalAddr().String())
-	if err != nil {
-		rep := &reply{resCode: generalSocksFailure}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
-		return err
-	}
-
+	bindAddr, bindPortStr, _ := net.SplitHostPort(serverConn.LocalAddr().String())
 	var addressType addrType
 	if ip := net.ParseIP(bindAddr); ip != nil {
 		if ip.To4() != nil {
@@ -110,11 +104,11 @@ func HandleConnection(conn net.Conn) error {
 	bindPort, _ := strconv.Atoi(bindPortStr)
 
 	rep := &reply{resCode: succeeded, addressType: addressType, bindAddr: bindAddr, bindPort: uint16(bindPort)}
-	buf, err := rep.getAsBuf()
+	buf, err := rep.marshal()
 	if err != nil {
 		rep := &reply{resCode: generalSocksFailure}
-		buf, _ := rep.getAsBuf()
-		_, err = conn.Write(buf)
+		buf, _ := rep.marshal()
+		conn.Write(buf)
 		return err
 	}
 
@@ -212,7 +206,7 @@ func parseRequest(conn net.Conn) (*request, error) {
 		}
 		destHost = net.IP(addr[:]).String()
 	default:
-		return nil, fmt.Errorf("invalid address type code -> (%d) <-", addressType)
+		return nil, fmt.Errorf("invalid address type code -> (%v) <-", addressType)
 	}
 	var portBuf [2]byte
 	_, err = io.ReadFull(conn, portBuf[:])
@@ -235,7 +229,7 @@ type reply struct {
 	bindPort    uint16
 }
 
-func (r *reply) getAsBuf() ([]byte, error) {
+func (r *reply) marshal() ([]byte, error) {
 	buf := []byte{
 		socksServerVersion,
 		byte(r.resCode),
@@ -262,7 +256,7 @@ func (r *reply) getAsBuf() ([]byte, error) {
 			return nil, fmt.Errorf("invalid IPv6 address (in replyl header)")
 		}
 	default:
-		return nil, fmt.Errorf("invalid address type code -> (%d) <- (in reply header)", r.addressType)
+		return nil, fmt.Errorf("invalid address type code -> (%v) <- (in reply header)", r.addressType)
 	}
 	var bindPortBinary [2]byte
 	binary.BigEndian.PutUint16(bindPortBinary[:], r.bindPort)
