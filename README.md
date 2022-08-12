@@ -27,6 +27,18 @@ Usage of ./socks-server:
 
 ```
 Now the server is ready to accept connections and handle them.
+
+## TODO
+### socks5
+- [x]  connect
+- [ ]  bind
+- [ ]  udp associate
+
+### socks4a
+- [x]  connect
+- [ ]  bind
+
+
 ## REF
 * socks 5 (rfc 1928) : https://datatracker.ietf.org/doc/html/rfc1928
 * socks 4 : https://www.openssh.com/txt/socks4.protocol

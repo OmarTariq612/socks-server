@@ -14,6 +14,6 @@ func main() {
 	s := server.NewSocksServer(*host, *port)
 	err := s.ListenAndServe()
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 	}
 }
