@@ -1,10 +1,10 @@
 package socks5
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"time"
@@ -55,37 +55,57 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
-var dialer = &net.Dialer{}
-
 func HandleConnection(conn net.Conn) error {
-	err := handleHandshake(conn)
+	c := newClient(conn)
+	return c.handle()
+}
+
+type client struct {
+	conn net.Conn
+	req  *request
+}
+
+func newClient(conn net.Conn) *client {
+	return &client{conn: conn}
+}
+
+func (c *client) handle() error {
+	err := handleHandshake(c.conn)
 	if err != nil {
-		conn.Write([]byte{socksServerVersion, noAcceptableMethod})
+		c.conn.Write([]byte{socksServerVersion, noAcceptableMethod})
 		return err
 	}
-	_, err = conn.Write([]byte{socksServerVersion, noAuthMethodRequired})
+	_, err = c.conn.Write([]byte{socksServerVersion, noAuthMethodRequired})
 	if err != nil {
-		return fmt.Errorf("could not write the chosen auth method to the client")
+		return fmt.Errorf("could not reply to the handshake")
 	}
 
-	req, err := parseRequest(conn)
+	req, err := parseRequest(c.conn)
 	if err != nil {
+		c.sendFailure(generalSocksFailure)
 		return err
 	}
-	if req.cmd != connect {
+	c.req = req
+
+	switch c.req.cmd {
+	case connect:
+		return c.handleConnectCmd()
+	case bind:
+		return c.handleBindCmd()
+	case udpAssociate:
+		return c.handleUDPAssociateCmd()
+	default:
 		rep := &reply{resCode: commandNotSupported}
 		buf, _ := rep.marshal()
-		conn.Write(buf)
-		return fmt.Errorf("unsupported command -> (%v) <-", req.cmd)
+		c.conn.Write(buf)
+		return fmt.Errorf("invalid command -> (%v) <-", c.req.cmd)
 	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
-	defer cancel()
-	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
+func (c *client) handleConnectCmd() error {
+	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
 	if err != nil {
-		rep := &reply{resCode: generalSocksFailure}
-		buf, _ := rep.marshal()
-		conn.Write(buf)
+		c.sendFailure(generalSocksFailure)
 		return err
 	}
 	defer serverConn.Close()
@@ -106,13 +126,11 @@ func HandleConnection(conn net.Conn) error {
 	rep := &reply{resCode: succeeded, addressType: addressType, bindAddr: bindAddr, bindPort: uint16(bindPort)}
 	buf, err := rep.marshal()
 	if err != nil {
-		rep := &reply{resCode: generalSocksFailure}
-		buf, _ := rep.marshal()
-		conn.Write(buf)
+		c.sendFailure(generalSocksFailure)
 		return err
 	}
 
-	_, err = conn.Write(buf)
+	_, err = c.conn.Write(buf)
 	if err != nil {
 		return err
 	}
@@ -120,7 +138,7 @@ func HandleConnection(conn net.Conn) error {
 	errc := make(chan error, 2)
 
 	go func() {
-		_, err := io.Copy(serverConn, conn)
+		_, err := io.Copy(serverConn, c.conn)
 		if err != nil {
 			err = fmt.Errorf("could not copy from client to server, %v", err)
 		}
@@ -128,7 +146,7 @@ func HandleConnection(conn net.Conn) error {
 	}()
 
 	go func() {
-		_, err := io.Copy(conn, serverConn)
+		_, err := io.Copy(c.conn, serverConn)
 		if err != nil {
 			err = fmt.Errorf("could not copy from server to client, %v", err)
 		}
@@ -136,6 +154,155 @@ func HandleConnection(conn net.Conn) error {
 	}()
 
 	return <-errc
+}
+
+func (c *client) handleBindCmd() error {
+	// TODO: support bind command
+	c.sendFailure(commandNotSupported)
+	return fmt.Errorf("bind cmd is not supported")
+}
+
+func (c *client) handleUDPAssociateCmd() error {
+	udpAddr, err := net.ResolveUDPAddr("udp", "")
+	if err != nil {
+		c.sendFailure(generalSocksFailure)
+		return err
+	}
+	// TODO: support IPv6
+	udpRelaySrv, err := net.ListenUDP("udp4", udpAddr)
+	if err != nil {
+
+		c.sendFailure(generalSocksFailure)
+		return err
+	}
+	defer udpRelaySrv.Close()
+
+	bindAddr, bindPortStr, _ := net.SplitHostPort(udpRelaySrv.LocalAddr().String())
+	bindPort, _ := strconv.Atoi(bindPortStr)
+	rep := &reply{resCode: succeeded, addressType: ipv4, bindAddr: bindAddr, bindPort: uint16(bindPort)}
+	replyBuf, err := rep.marshal()
+	if err != nil {
+		c.sendFailure(generalSocksFailure)
+		return err
+	}
+	_, err = c.conn.Write(replyBuf)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		var buf [1]byte
+		for {
+			_, err := c.conn.Read(buf[:])
+			if err != nil {
+				udpRelaySrv.Close()
+				break
+			}
+		}
+	}()
+
+	const maxBufSize = math.MaxUint16 - 28
+	var buf [maxBufSize]byte
+	firstReceive := true
+	associatedAddr := c.conn.RemoteAddr().(*net.TCPAddr)
+	var associatedUDPAddr *net.UDPAddr
+
+	for {
+		n, senderAddr, err := udpRelaySrv.ReadFromUDP(buf[:])
+		if err != nil {
+			return err
+		}
+
+		if firstReceive {
+			if !net.IP.Equal(senderAddr.IP, associatedAddr.IP) {
+				continue
+			}
+			firstReceive = false
+			associatedUDPAddr = senderAddr
+		}
+
+		if net.IP.Equal(senderAddr.IP, associatedAddr.IP) {
+			req, err := parseUDPAssociateRequest(buf[:n])
+			if err != nil {
+				return err
+			}
+			_, err = udpRelaySrv.WriteToUDP(buf[req.payloadIndex:n], req.destAddr)
+			if err != nil {
+				return err
+			}
+		} else {
+			packet, err := udpAssociateReply(senderAddr, buf[:n])
+			if err != nil {
+				return err
+			}
+			_, err = udpRelaySrv.WriteToUDP(packet, associatedUDPAddr)
+			if err != nil {
+				return err
+			}
+		}
+	}
+}
+
+type udpAssociateRequest struct {
+	fragmentNumber byte
+	addressType    addrType
+	destAddr       *net.UDPAddr
+	payloadIndex   int
+}
+
+func parseUDPAssociateRequest(b []byte) (*udpAssociateRequest, error) {
+	fragmentNumber := b[2]
+	addressType := addrType(b[3])
+	var payloadIndex int
+	var host string
+	switch addressType {
+	case ipv4:
+		host = net.IP(b[4:8]).String()
+		payloadIndex = 10
+	case domainname:
+		length := int(b[4])
+		host = string(b[5 : length+5])
+		payloadIndex = length + 7
+	case ipv6:
+		host = net.IP(b[4:20]).String()
+		payloadIndex = 22
+	default:
+		return nil, fmt.Errorf("invalid address type code -> (%v) <-", addressType)
+	}
+	portIndex := payloadIndex - 2
+	port := binary.BigEndian.Uint16(b[portIndex : portIndex+2])
+	destAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		return nil, fmt.Errorf("invalid destination in the udp associate request")
+	}
+	return &udpAssociateRequest{fragmentNumber: fragmentNumber, addressType: addressType, destAddr: destAddr, payloadIndex: payloadIndex}, nil
+}
+
+func udpAssociateReply(addr *net.UDPAddr, payload []byte) ([]byte, error) {
+	var addrLength int
+	var addressType addrType
+	if ip := addr.IP.To4(); ip != nil {
+		addrLength = 4
+		addressType = ipv4
+	} else {
+		addrLength = 16
+		addressType = ipv6
+	}
+	var port [2]byte
+	binary.BigEndian.PutUint16(port[:], uint16(addr.Port))
+	packet := make([]byte, 0, 4+addrLength+2+len(payload))
+	packet = append(packet, 0, 0, 0, byte(addressType))
+	packet = append(packet, addr.IP...)
+	packet = append(packet, port[:]...)
+	packet = append(packet, payload...)
+	return packet, nil
+}
+
+func (c *client) sendFailure(code resultCode) error {
+	rep := &reply{resCode: code}
+	buf, _ := rep.marshal()
+	_, err := c.conn.Write(buf)
+	return err
 }
 
 func handleHandshake(conn net.Conn) error {

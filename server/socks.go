@@ -30,7 +30,7 @@ func (s *SocksServer) ListenAndServe() error {
 		return err
 	}
 	defer listener.Close()
-	log.Println("Listening at", s.address)
+	log.Println("Serving on", s.address)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

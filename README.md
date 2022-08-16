@@ -21,7 +21,7 @@ Usage of ./socks-server:
 ./socks-server -host 0.0.0.0 -port 5000
 ```
 ```
-2022/07/30 05:04:57 Listening at 0.0.0.0:5000
+2022/07/30 05:04:57 Serving on 0.0.0.0:5000
 
 
 
@@ -32,7 +32,7 @@ Now the server is ready to accept connections and handle them.
 ### socks5
 - [x]  connect
 - [ ]  bind
-- [ ]  udp associate
+- [x]  udp associate
 
 ### socks4a
 - [x]  connect
