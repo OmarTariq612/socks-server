@@ -36,7 +36,7 @@ Now the server is ready to accept connections and handle them.
 
 ### socks4a
 - [x]  connect
-- [ ]  bind
+- [x]  bind
 
 
 ## REF

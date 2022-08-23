@@ -111,9 +111,71 @@ func (c *client) handleConnectCmd() error {
 }
 
 func (c *client) handleBindCmd() error {
-	// TODO: support bind command
-	c.sendFailure(requestRejectedOrFailed)
-	return fmt.Errorf("[socks4] bind cmd is not supported")
+	listener, err := net.ListenTCP("tcp4", nil)
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return err
+	}
+	defer listener.Close()
+
+	_, bindPortStr, _ := net.SplitHostPort(listener.Addr().String())
+	bindPort, _ := strconv.Atoi(bindPortStr)
+	bindAddr, _, _ := net.SplitHostPort(c.conn.LocalAddr().String())
+
+	rep := &reply{resCode: requestGranted, bindAddr: bindAddr, bindPort: uint16(bindPort)}
+	buf, err := rep.marshal()
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return err
+	}
+
+	// first reply
+	_, err = c.conn.Write(buf)
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return fmt.Errorf("could not write first reply to the client")
+	}
+
+	listener.SetDeadline(time.Now().Add(timeoutDuration))
+	bindConn, err := listener.Accept()
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return err
+	}
+	defer bindConn.Close()
+
+	connectedIP := bindConn.RemoteAddr().(*net.TCPAddr).IP
+	if !net.IP.IsUnspecified(connectedIP) && net.IP.Equal(net.ParseIP(c.req.destHost), connectedIP) {
+		c.sendFailure(requestRejectedOrFailed)
+		return fmt.Errorf("bind: mismatch is found")
+	}
+
+	// second reply
+	_, err = c.conn.Write(buf)
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return fmt.Errorf("could not write second reply to the client")
+	}
+
+	errc := make(chan error, 2)
+
+	go func() {
+		_, err := io.Copy(c.conn, bindConn)
+		if err != nil {
+			err = fmt.Errorf("could not copy from server to client, %v", err)
+		}
+		errc <- err
+	}()
+
+	go func() {
+		_, err := io.Copy(bindConn, c.conn)
+		if err != nil {
+			err = fmt.Errorf("could not copy from client to server, %v", err)
+		}
+		errc <- err
+	}()
+
+	return <-errc
 }
 
 func (c *client) sendFailure(code resultCode) error {
