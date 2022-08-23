@@ -2,7 +2,6 @@ package socks4a
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -35,27 +34,42 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
-var dialer = &net.Dialer{}
-
 func HandleConnection(conn net.Conn) error {
-	req, err := parseRequest(conn)
+	c := newClient(conn)
+	return c.handle()
+}
+
+type client struct {
+	conn net.Conn
+	req  *request
+}
+
+func newClient(conn net.Conn) *client {
+	return &client{conn: conn}
+}
+
+func (c *client) handle() error {
+	req, err := parseRequest(c.conn)
 	if err != nil {
 		return err
 	}
-	if req.cmd != connect {
-		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.marshal()
-		conn.Write(buf)
-		return fmt.Errorf("unsupported command -> (%v) <-", req.cmd)
-	}
+	c.req = req
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
-	defer cancel()
-	serverConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(req.destHost, strconv.Itoa(int(req.destPort))))
+	switch c.req.cmd {
+	case connect:
+		return c.handleConnectCmd()
+	case bind:
+		return c.handleBindCmd()
+	default:
+		c.sendFailure(requestRejectedOrFailed)
+		return fmt.Errorf("unsupported command -> (%v) <-", c.req.cmd)
+	}
+}
+
+func (c *client) handleConnectCmd() error {
+	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
 	if err != nil {
-		rep := &reply{resCode: requestRejectedOrFailed}
-		buf, _ := rep.marshal()
-		conn.Write(buf)
+		c.sendFailure(requestRejectedOrFailed)
 		return err
 	}
 	defer serverConn.Close()
@@ -64,8 +78,13 @@ func HandleConnection(conn net.Conn) error {
 	bindPort, _ := strconv.Atoi(bindPortStr)
 
 	rep := &reply{resCode: requestGranted, bindAddr: bindAddr, bindPort: uint16(bindPort)}
-	buf, _ := rep.marshal()
-	_, err = conn.Write(buf)
+	buf, err := rep.marshal()
+	if err != nil {
+		c.sendFailure(requestRejectedOrFailed)
+		return err
+	}
+
+	_, err = c.conn.Write(buf)
 	if err != nil {
 		return fmt.Errorf("could not write reply to the client")
 	}
@@ -73,7 +92,7 @@ func HandleConnection(conn net.Conn) error {
 	errc := make(chan error, 2)
 
 	go func() {
-		_, err := io.Copy(serverConn, conn)
+		_, err := io.Copy(serverConn, c.conn)
 		if err != nil {
 			err = fmt.Errorf("could not copy from client to server, %v", err)
 		}
@@ -81,7 +100,7 @@ func HandleConnection(conn net.Conn) error {
 	}()
 
 	go func() {
-		_, err := io.Copy(conn, serverConn)
+		_, err := io.Copy(c.conn, serverConn)
 		if err != nil {
 			err = fmt.Errorf("could not copy from server to client, %v", err)
 		}
@@ -89,6 +108,19 @@ func HandleConnection(conn net.Conn) error {
 	}()
 
 	return <-errc
+}
+
+func (c *client) handleBindCmd() error {
+	// TODO: support bind command
+	c.sendFailure(requestRejectedOrFailed)
+	return fmt.Errorf("[socks4] bind cmd is not supported")
+}
+
+func (c *client) sendFailure(code resultCode) error {
+	rep := &reply{resCode: code, bindAddr: "0.0.0.0", bindPort: 0}
+	buf, _ := rep.marshal()
+	_, err := c.conn.Write(buf)
+	return err
 }
 
 // +----+----+----+----+----+----+----+----+----+----+....+----+

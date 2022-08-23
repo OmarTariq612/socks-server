@@ -95,9 +95,7 @@ func (c *client) handle() error {
 	case udpAssociate:
 		return c.handleUDPAssociateCmd()
 	default:
-		rep := &reply{resCode: commandNotSupported}
-		buf, _ := rep.marshal()
-		c.conn.Write(buf)
+		c.sendFailure(commandNotSupported)
 		return fmt.Errorf("invalid command -> (%v) <-", c.req.cmd)
 	}
 }
@@ -159,7 +157,7 @@ func (c *client) handleConnectCmd() error {
 func (c *client) handleBindCmd() error {
 	// TODO: support bind command
 	c.sendFailure(commandNotSupported)
-	return fmt.Errorf("bind cmd is not supported")
+	return fmt.Errorf("[socks5] bind cmd is not supported")
 }
 
 func (c *client) handleUDPAssociateCmd() error {
@@ -201,7 +199,7 @@ func (c *client) handleUDPAssociateCmd() error {
 		}
 	}()
 
-	const maxBufSize = math.MaxUint16 - 28
+	const maxBufSize = math.MaxUint16 - 28 // 28 = [20-byte IP header] + [8-byte UDP header]
 	var buf [maxBufSize]byte
 	firstReceive := true
 	associatedAddr := c.conn.RemoteAddr().(*net.TCPAddr)
@@ -299,7 +297,8 @@ func udpAssociateReply(addr *net.UDPAddr, payload []byte) ([]byte, error) {
 }
 
 func (c *client) sendFailure(code resultCode) error {
-	rep := &reply{resCode: code}
+	// rep := &reply{resCode: code}
+	rep := &reply{resCode: code, addressType: ipv4, bindAddr: "0.0.0.0", bindPort: 0}
 	buf, _ := rep.marshal()
 	_, err := c.conn.Write(buf)
 	return err
