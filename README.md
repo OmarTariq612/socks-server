@@ -11,17 +11,18 @@ go build .
 ./socks-server -h
 ```
 ```
-Usage of ./socks-server:
-  -host string
-    	socks server host
-  -port int
-    	socks server port (default 5555)
+Usage of socks-server:
+  -bind string
+        socks server bind address (default ":5555")
+  -dns string
+        specify a dns server (ip:port) to be used for resolving domains
 ```
 ```
-./socks-server -host 0.0.0.0 -port 5000
+./socks-server -bind :1080 -dns 8.8.8.8:53
 ```
 ```
-2022/07/30 05:04:57 Serving on 0.0.0.0:5000
+2022/10/03 06:45:17 dns server 8.8.8.8:53
+2022/10/03 06:45:17 Serving on :1080
 
 
 

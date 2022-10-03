@@ -1,14 +1,16 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"strconv"
+	"time"
 
 	"github.com/OmarTariq612/socks-server/server/socks4a"
 	"github.com/OmarTariq612/socks-server/server/socks5"
+	"github.com/OmarTariq612/socks-server/utils"
 )
 
 const (
@@ -17,22 +19,40 @@ const (
 )
 
 type SocksServer struct {
-	address string
+	config *utils.Config
 }
 
-func NewSocksServer(host string, port int) *SocksServer {
-	return &SocksServer{net.JoinHostPort(host, strconv.Itoa(int(port)))}
+func NewSocksServer(config *utils.Config) *SocksServer {
+	if config == nil {
+		config = &utils.Config{}
+	}
+	if config.Resolv == nil {
+		config.Resolv = utils.DefaultResolver{}
+	}
+	if config.Dial == nil {
+		config.Dial = func(_ context.Context, network, addr string) (net.Conn, error) {
+			return net.DialTimeout(network, addr, 5*time.Second)
+		}
+	}
+	return &SocksServer{config: config}
 }
 
-func (s *SocksServer) ListenAndServe() error {
-	listener, err := net.Listen("tcp", s.address)
+func (s *SocksServer) ListenAndServe(network, addr string) error {
+	// init socks4 and socks5 config
+	socks4a.InitConfig(s.config)
+	socks5.InitConfig(s.config)
+	listener, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	log.Println("Serving on", s.address)
+	log.Println("Serving on", addr)
+	return s.Serve(listener)
+}
+
+func (s *SocksServer) Serve(l net.Listener) error {
 	for {
-		conn, err := listener.Accept()
+		conn, err := l.Accept()
 		if err != nil {
 			return err
 		}

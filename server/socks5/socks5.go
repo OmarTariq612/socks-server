@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/OmarTariq612/socks-server/utils"
 )
 
 const socksServerVersion byte = 5
@@ -55,6 +58,12 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
+var currConfig *utils.Config
+
+func InitConfig(config *utils.Config) {
+	currConfig = config
+}
+
 func HandleConnection(conn net.Conn) error {
 	c := newClient(conn)
 	return c.handle()
@@ -86,22 +95,39 @@ func (c *client) handle() error {
 		return err
 	}
 	c.req = req
+	ctx := context.Background()
+
+	if c.req.addressType == domainname {
+		resolvedIP, err := currConfig.Resolv.Resolve(ctx, c.req.destHost)
+		if err != nil {
+			return err
+		}
+
+		if ip4 := net.IP(resolvedIP).To4(); ip4 != nil {
+			c.req.addressType = ipv4
+			c.req.destHost = ip4.String()
+		} else {
+			c.req.addressType = ipv6
+			c.req.destHost = net.IP(resolvedIP).To16().String()
+		}
+	}
 
 	switch c.req.cmd {
 	case connect:
-		return c.handleConnectCmd()
+		return c.handleConnectCmd(ctx)
 	case bind:
-		return c.handleBindCmd()
+		return c.handleBindCmd(ctx)
 	case udpAssociate:
-		return c.handleUDPAssociateCmd()
+		return c.handleUDPAssociateCmd(ctx)
 	default:
 		c.sendFailure(commandNotSupported)
 		return fmt.Errorf("invalid command -> (%v) <-", c.req.cmd)
 	}
 }
 
-func (c *client) handleConnectCmd() error {
-	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
+func (c *client) handleConnectCmd(ctx context.Context) error {
+	// serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
+	serverConn, err := currConfig.Dial(ctx, "tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))))
 	if err != nil {
 		c.sendFailure(generalSocksFailure)
 		return err
@@ -154,13 +180,13 @@ func (c *client) handleConnectCmd() error {
 	return <-errc
 }
 
-func (c *client) handleBindCmd() error {
+func (c *client) handleBindCmd(ctx context.Context) error {
 	// TODO: support bind command
 	c.sendFailure(commandNotSupported)
 	return fmt.Errorf("[socks5] bind cmd is not supported")
 }
 
-func (c *client) handleUDPAssociateCmd() error {
+func (c *client) handleUDPAssociateCmd(ctx context.Context) error {
 	udpAddr, err := net.ResolveUDPAddr("udp", "")
 	if err != nil {
 		c.sendFailure(generalSocksFailure)

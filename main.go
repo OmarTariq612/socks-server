@@ -2,17 +2,37 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net"
 
 	"github.com/OmarTariq612/socks-server/server"
+	"github.com/OmarTariq612/socks-server/utils"
 )
 
 func main() {
-	host := flag.String("host", "", "socks server host")
-	port := flag.Int("port", 5555, "socks server port")
+	bindAddr := flag.String("bind", ":5555", "socks server bind address")
+	dnsAddr := flag.String("dns", "", "specify a dns server (ip:port) to be used for resolving domains")
 	flag.Parse()
-	s := server.NewSocksServer(*host, *port)
-	err := s.ListenAndServe()
+
+	var resolver utils.Resolver
+	if *dnsAddr == "" {
+		resolver = utils.DefaultResolver{}
+	} else {
+		if _, _, err := net.SplitHostPort(*dnsAddr); err != nil {
+			fmt.Println("dns server should be in this format 'ip:port'")
+			return
+		}
+		log.Printf("dns server %v\n", *dnsAddr)
+		resolver = utils.NewCustomResolver(*dnsAddr)
+	}
+
+	config := &utils.Config{
+		Resolv: resolver,
+	}
+
+	s := server.NewSocksServer(config)
+	err := s.ListenAndServe("tcp", *bindAddr)
 	if err != nil {
 		log.Println(err)
 	}

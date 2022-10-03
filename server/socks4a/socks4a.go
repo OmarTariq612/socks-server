@@ -2,12 +2,15 @@ package socks4a
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/OmarTariq612/socks-server/utils"
 )
 
 // const socksServerVersion byte = 4
@@ -17,6 +20,14 @@ type command byte
 const (
 	connect command = 1
 	bind    command = 2
+)
+
+type addrType byte
+
+const (
+	ipv4       addrType = 1
+	domainname addrType = 3
+	ipv6       addrType = 4
 )
 
 type resultCode byte
@@ -33,6 +44,12 @@ const (
 )
 
 const timeoutDuration time.Duration = 5 * time.Second
+
+var currConfig *utils.Config
+
+func InitConfig(config *utils.Config) {
+	currConfig = config
+}
 
 func HandleConnection(conn net.Conn) error {
 	c := newClient(conn)
@@ -54,20 +71,37 @@ func (c *client) handle() error {
 		return err
 	}
 	c.req = req
+	ctx := context.Background()
+
+	if c.req.addressType == domainname {
+		resolvedIP, err := currConfig.Resolv.Resolve(ctx, c.req.destHost)
+		if err != nil {
+			return err
+		}
+
+		if ip4 := net.IP(resolvedIP).To4(); ip4 != nil {
+			c.req.addressType = ipv4
+			c.req.destHost = ip4.String()
+		} else {
+			c.req.addressType = ipv6
+			c.req.destHost = net.IP(resolvedIP).To16().String()
+		}
+	}
 
 	switch c.req.cmd {
 	case connect:
-		return c.handleConnectCmd()
+		return c.handleConnectCmd(ctx)
 	case bind:
-		return c.handleBindCmd()
+		return c.handleBindCmd(ctx)
 	default:
 		c.sendFailure(requestRejectedOrFailed)
 		return fmt.Errorf("unsupported command -> (%v) <-", c.req.cmd)
 	}
 }
 
-func (c *client) handleConnectCmd() error {
-	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
+func (c *client) handleConnectCmd(ctx context.Context) error {
+	// serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
+	serverConn, err := currConfig.Dial(ctx, "tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))))
 	if err != nil {
 		c.sendFailure(requestRejectedOrFailed)
 		return err
@@ -110,7 +144,7 @@ func (c *client) handleConnectCmd() error {
 	return <-errc
 }
 
-func (c *client) handleBindCmd() error {
+func (c *client) handleBindCmd(ctx context.Context) error {
 	listener, err := net.ListenTCP("tcp4", nil)
 	if err != nil {
 		c.sendFailure(requestRejectedOrFailed)
@@ -190,9 +224,10 @@ func (c *client) sendFailure(code resultCode) error {
 // +----+----+----+----+----+----+----+----+----+----+....+----+
 //    1    1      2              4           variable       1
 type request struct {
-	cmd      command
-	destHost string
-	destPort uint16
+	cmd         command
+	addressType addrType
+	destHost    string
+	destPort    uint16
 }
 
 func parseRequest(conn net.Conn) (*request, error) {
@@ -214,6 +249,7 @@ func parseRequest(conn net.Conn) (*request, error) {
 	cmd := command(buf[0])
 	destPort := binary.BigEndian.Uint16(buf[1:3])
 	var destHost string
+	var addressType addrType
 	if isDomainUnresolved(buf[3:7]) {
 		domainName := make([]byte, 0, 20) // this is an estimate of the domain name length
 		for {
@@ -227,10 +263,12 @@ func parseRequest(conn net.Conn) (*request, error) {
 			domainName = append(domainName, oneByteBuf[0])
 		}
 		destHost = string(domainName)
+		addressType = domainname
 	} else {
 		destHost = net.IP(buf[3:7]).String()
+		addressType = ipv4
 	}
-	return &request{cmd: cmd, destHost: destHost, destPort: destPort}, nil
+	return &request{cmd: cmd, addressType: addressType, destHost: destHost, destPort: destPort}, nil
 }
 
 func isDomainUnresolved(ip []byte) bool {
