@@ -10,6 +10,7 @@ import (
 
 	"github.com/OmarTariq612/socks-server/server/socks4a"
 	"github.com/OmarTariq612/socks-server/server/socks5"
+	"github.com/OmarTariq612/socks-server/server/socks5/auth"
 	"github.com/OmarTariq612/socks-server/utils"
 )
 
@@ -19,10 +20,11 @@ const (
 )
 
 type SocksServer struct {
-	config *utils.Config
+	config     *utils.Config
+	authMedhod []auth.AuthMethod
 }
 
-func NewSocksServer(config *utils.Config) *SocksServer {
+func NewSocksServer(config *utils.Config, authMethods ...auth.AuthMethod) *SocksServer {
 	if config == nil {
 		config = &utils.Config{}
 	}
@@ -34,13 +36,17 @@ func NewSocksServer(config *utils.Config) *SocksServer {
 			return net.DialTimeout(network, addr, 5*time.Second)
 		}
 	}
-	return &SocksServer{config: config}
+	return &SocksServer{config: config, authMedhod: authMethods}
 }
 
 func (s *SocksServer) ListenAndServe(network, addr string) error {
 	// init socks4 and socks5 config
-	socks4a.InitConfig(s.config)
-	socks5.InitConfig(s.config)
+	if err := socks4a.InitConfig(s.config); err != nil {
+		return err
+	}
+	if err := socks5.InitConfig(s.config, s.authMedhod); err != nil {
+		return err
+	}
 	listener, err := net.Listen(network, addr)
 	if err != nil {
 		return err

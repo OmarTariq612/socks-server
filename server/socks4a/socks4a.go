@@ -47,8 +47,9 @@ const timeoutDuration time.Duration = 5 * time.Second
 
 var currConfig *utils.Config
 
-func InitConfig(config *utils.Config) {
+func InitConfig(config *utils.Config) error {
 	currConfig = config
+	return nil
 }
 
 func HandleConnection(conn net.Conn) error {
@@ -222,7 +223,8 @@ func (c *client) sendFailure(code resultCode) error {
 // +----+----+----+----+----+----+----+----+----+----+....+----+
 // | VN | CD | DSTPORT |      DSTIP        | USERID       |NULL|
 // +----+----+----+----+----+----+----+----+----+----+....+----+
-//    1    1      2              4           variable       1
+//
+//	1    1      2              4           variable       1
 type request struct {
 	cmd         command
 	addressType addrType
@@ -278,7 +280,8 @@ func isDomainUnresolved(ip []byte) bool {
 // +----+----+----+----+----+----+----+----+
 // | VN | CD | DSTPORT |      DSTIP        |
 // +----+----+----+----+----+----+----+----+
-//    1    1      2              4
+//
+//	1    1      2              4
 type reply struct {
 	resCode  resultCode
 	bindAddr string

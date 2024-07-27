@@ -10,21 +10,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/OmarTariq612/socks-server/server/socks5/auth"
 	"github.com/OmarTariq612/socks-server/utils"
 )
 
 const socksServerVersion byte = 5
-
-// o  X'00' NO AUTHENTICATION REQUIRED
-// o  X'01' GSSAPI
-// o  X'02' USERNAME/PASSWORD
-// o  X'03' to X'7F' IANA ASSIGNED
-// o  X'80' to X'FE' RESERVED FOR PRIVATE METHODS
-// o  X'FF' NO ACCEPTABLE METHODS
-const (
-	noAuthMethodRequired byte = 0x00
-	noAcceptableMethod   byte = 0xFF
-)
 
 type command byte
 
@@ -58,10 +48,21 @@ const (
 
 const timeoutDuration time.Duration = 5 * time.Second
 
-var currConfig *utils.Config
+var currConfig struct {
+	c           *utils.Config
+	authMethods []auth.AuthMethod
+}
 
-func InitConfig(config *utils.Config) {
-	currConfig = config
+func InitConfig(config *utils.Config, methods []auth.AuthMethod) error {
+	currConfig.c = config
+	if len(methods) == 0 {
+		methods = append(methods, auth.NoAuth())
+	}
+	if err := auth.ValidateAuthMethods(methods); err != nil {
+		return err
+	}
+	currConfig.authMethods = methods
+	return nil
 }
 
 func HandleConnection(conn net.Conn) error {
@@ -79,16 +80,18 @@ func newClient(conn net.Conn) *client {
 }
 
 func (c *client) handle() error {
-	err := handleHandshake(c.conn)
+	authMethodIndex, err := handleHandshake(c.conn)
 	if err != nil {
-		c.conn.Write([]byte{socksServerVersion, noAcceptableMethod})
+		c.conn.Write([]byte{socksServerVersion, auth.NoAcceptableMethodCode})
 		return err
 	}
-	_, err = c.conn.Write([]byte{socksServerVersion, noAuthMethodRequired})
+	_, err = c.conn.Write([]byte{socksServerVersion, currConfig.authMethods[authMethodIndex].Code()})
 	if err != nil {
 		return fmt.Errorf("could not reply to the handshake")
 	}
-
+	if err := currConfig.authMethods[authMethodIndex].Handle(c.conn); err != nil {
+		return err
+	}
 	req, err := parseRequest(c.conn)
 	if err != nil {
 		c.sendFailure(generalSocksFailure)
@@ -98,7 +101,7 @@ func (c *client) handle() error {
 	ctx := context.Background()
 
 	if c.req.addressType == domainname {
-		resolvedIP, err := currConfig.Resolv.Resolve(ctx, c.req.destHost)
+		resolvedIP, err := currConfig.c.Resolv.Resolve(ctx, c.req.destHost)
 		if err != nil {
 			return err
 		}
@@ -127,7 +130,7 @@ func (c *client) handle() error {
 
 func (c *client) handleConnectCmd(ctx context.Context) error {
 	// serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))), timeoutDuration)
-	serverConn, err := currConfig.Dial(ctx, "tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))))
+	serverConn, err := currConfig.c.Dial(ctx, "tcp", net.JoinHostPort(c.req.destHost, strconv.Itoa(int(c.req.destPort))))
 	if err != nil {
 		c.sendFailure(generalSocksFailure)
 		return err
@@ -330,23 +333,25 @@ func (c *client) sendFailure(code resultCode) error {
 	return err
 }
 
-func handleHandshake(conn net.Conn) error {
+func handleHandshake(conn net.Conn) (authMethodIndex int, err error) {
 	var nAuthMethods [1]byte
-	_, err := io.ReadFull(conn, nAuthMethods[:])
+	_, err = io.ReadFull(conn, nAuthMethods[:])
 	if err != nil {
-		return fmt.Errorf("could not read len of methods (handshake)")
+		return -1, fmt.Errorf("could not read len of methods (handshake)")
 	}
 	authMethods := make([]byte, nAuthMethods[0])
 	_, err = io.ReadFull(conn, authMethods)
 	if err != nil {
-		return fmt.Errorf("could not read the list of auth methods (handshake)")
+		return -1, fmt.Errorf("could not read the list of auth methods (handshake)")
 	}
 	for _, method := range authMethods {
-		if method == noAuthMethodRequired {
-			return nil
+		for i, acceptedAuthMethod := range currConfig.authMethods {
+			if method == acceptedAuthMethod.Code() {
+				return i, nil
+			}
 		}
 	}
-	return fmt.Errorf("no auth method is accepted")
+	return -1, fmt.Errorf("no auth method is accepted")
 }
 
 // +----+-----+-------+------+----------+----------+
